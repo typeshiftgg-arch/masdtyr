@@ -8,6 +8,7 @@ app.use(express.json({ limit: '10mb' }));
 
 // API Routes
 app.use("/api", apiRouter);
+app.use("/.netlify/functions/api", apiRouter);
 
 // Export for Netlify
 export const handler = serverless(app);
