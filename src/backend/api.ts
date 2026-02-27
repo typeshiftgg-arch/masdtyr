@@ -1,19 +1,24 @@
 import express from "express";
-import Database from "better-sqlite3";
 import nodemailer from "nodemailer";
-import { GoogleGenAI } from "@google/genai";
 
 const router = express.Router();
+
+// In-memory fallback store for serverless environments where SQLite fails
+let memoryExpenses: any[] = [];
 
 // Use /tmp for SQLite in serverless environments
 const isServerless = process.env.NETLIFY || process.env.VERCEL;
 const dbPath = isServerless ? "/tmp/expenses.db" : "expenses.db";
-let db: any;
-let dbError: string | null = null;
+let db: any = null;
+let useMemoryFallback = false;
 
-function getDb() {
+async function getDb() {
   if (db) return db;
+  if (useMemoryFallback) return null;
+
   try {
+    // Dynamic import to prevent top-level crash if binary is missing
+    const { default: Database } = await import("better-sqlite3");
     db = new Database(dbPath);
     db.exec(`
       CREATE TABLE IF NOT EXISTS expenses (
@@ -25,60 +30,75 @@ function getDb() {
         notes TEXT
       )
     `);
+    console.log("Database initialized successfully at", dbPath);
     return db;
   } catch (e: any) {
-    console.error("Database initialization failed:", e);
-    // Fallback to in-memory if file-based fails in serverless
-    try {
-      db = new Database(":memory:");
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS expenses (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          title TEXT NOT NULL,
-          amount REAL NOT NULL,
-          category TEXT NOT NULL,
-          date TEXT NOT NULL,
-          notes TEXT
-        )
-      `);
-      return db;
-    } catch (innerE: any) {
-      dbError = innerE.message;
-      throw innerE;
-    }
+    console.error("Database initialization failed, falling back to in-memory store:", e.message);
+    useMemoryFallback = true;
+    return null;
   }
 }
 
-router.get("/expenses", (req, res) => {
+router.get("/expenses", async (req, res) => {
   try {
-    const database = getDb();
-    const expenses = database.prepare("SELECT * FROM expenses ORDER BY date DESC").all();
-    res.json(expenses);
+    const database = await getDb();
+    if (database) {
+      const expenses = database.prepare("SELECT * FROM expenses ORDER BY date DESC").all();
+      return res.json(expenses);
+    }
+    // Fallback to memory
+    res.json([...memoryExpenses].sort((a, b) => b.date.localeCompare(a.date)));
   } catch (e: any) {
-    res.status(500).json({ error: "Database error: " + e.message });
+    console.error("GET /expenses error:", e.message);
+    res.status(500).json({ error: "API Error: " + e.message });
   }
 });
 
-router.post("/expenses", (req, res) => {
+router.post("/expenses", async (req, res) => {
   try {
-    const database = getDb();
     const { title, amount, category, date, notes } = req.body;
-    const info = database.prepare(
-      "INSERT INTO expenses (title, amount, category, date, notes) VALUES (?, ?, ?, ?, ?)"
-    ).run(title, amount, category, date, notes);
-    res.json({ id: info.lastInsertRowid });
+    const database = await getDb();
+    
+    if (database) {
+      const info = database.prepare(
+        "INSERT INTO expenses (title, amount, category, date, notes) VALUES (?, ?, ?, ?, ?)"
+      ).run(title, amount, category, date, notes);
+      return res.json({ id: info.lastInsertRowid });
+    }
+
+    // Fallback to memory
+    const newExpense = {
+      id: Date.now(),
+      title,
+      amount,
+      category,
+      date,
+      notes
+    };
+    memoryExpenses.push(newExpense);
+    res.json({ id: newExpense.id, warning: "Using temporary in-memory storage" });
   } catch (e: any) {
-    res.status(500).json({ error: "Database error: " + e.message });
+    console.error("POST /expenses error:", e.message);
+    res.status(500).json({ error: "API Error: " + e.message });
   }
 });
 
-router.delete("/expenses/:id", (req, res) => {
+router.delete("/expenses/:id", async (req, res) => {
   try {
-    const database = getDb();
-    database.prepare("DELETE FROM expenses WHERE id = ?").run(req.params.id);
+    const id = req.params.id;
+    const database = await getDb();
+    
+    if (database) {
+      database.prepare("DELETE FROM expenses WHERE id = ?").run(id);
+      return res.json({ success: true });
+    }
+
+    // Fallback to memory
+    memoryExpenses = memoryExpenses.filter(exp => exp.id.toString() !== id.toString());
     res.json({ success: true });
   } catch (e: any) {
-    res.status(500).json({ error: "Database error: " + e.message });
+    console.error("DELETE /expenses error:", e.message);
+    res.status(500).json({ error: "API Error: " + e.message });
   }
 });
 
@@ -91,8 +111,19 @@ router.post("/send-report", async (req, res) => {
   }
 
   try {
-    const database = getDb();
-    const expenses = database.prepare("SELECT * FROM expenses WHERE date >= date('now', 'start of month')").all();
+    const database = await getDb();
+    let expenses = [];
+    
+    if (database) {
+      expenses = database.prepare("SELECT * FROM expenses WHERE date >= date('now', 'start of month')").all();
+    } else {
+      expenses = memoryExpenses.filter(exp => {
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+        return exp.date >= startOfMonth;
+      });
+    }
+
     const total = expenses.reduce((sum: any, exp: any) => sum + exp.amount, 0);
     
     const smtpHost = process.env.SMTP_HOST;
@@ -111,13 +142,15 @@ router.post("/send-report", async (req, res) => {
     await transporter.sendMail({
       from: `"SmartSpend" <${process.env.SMTP_USER}>`,
       to: targetEmail,
-      subject: "Monthly Expense Report",
+      subject: "Your Monthly Expense Report",
       html,
     });
     res.json({ success: true });
   } catch (error: any) {
+    console.error("Email error:", error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
 export default router;
+
