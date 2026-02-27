@@ -10,11 +10,12 @@ app.use(express.json({ limit: '10mb' }));
 app.use("/api", apiRouter);
 app.use("/.netlify/functions/api", apiRouter);
 
-// Export for Netlify
+// Export for Vercel/Netlify
+export default app;
 export const handler = serverless(app);
 
 // Local development server
-if (process.env.NODE_ENV !== "production" && !process.env.NETLIFY) {
+if (process.env.NODE_ENV !== "production" && !process.env.NETLIFY && !process.env.VERCEL) {
   async function startDevServer() {
     const vite = await createViteServer({
       server: { middlewareMode: true },
