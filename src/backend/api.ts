@@ -6,52 +6,79 @@ import { GoogleGenAI } from "@google/genai";
 const router = express.Router();
 
 // Use /tmp for SQLite in serverless environments
-const dbPath = process.env.NETLIFY ? "/tmp/expenses.db" : "expenses.db";
+const isServerless = process.env.NETLIFY || process.env.VERCEL;
+const dbPath = isServerless ? "/tmp/expenses.db" : "expenses.db";
 let db: any;
+let dbError: string | null = null;
 
-try {
-  db = new Database(dbPath);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS expenses (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      amount REAL NOT NULL,
-      category TEXT NOT NULL,
-      date TEXT NOT NULL,
-      notes TEXT
-    )
-  `);
-} catch (e) {
-  console.error("Database initialization failed:", e);
+function getDb() {
+  if (db) return db;
+  try {
+    db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS expenses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        amount REAL NOT NULL,
+        category TEXT NOT NULL,
+        date TEXT NOT NULL,
+        notes TEXT
+      )
+    `);
+    return db;
+  } catch (e: any) {
+    console.error("Database initialization failed:", e);
+    // Fallback to in-memory if file-based fails in serverless
+    try {
+      db = new Database(":memory:");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS expenses (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          amount REAL NOT NULL,
+          category TEXT NOT NULL,
+          date TEXT NOT NULL,
+          notes TEXT
+        )
+      `);
+      return db;
+    } catch (innerE: any) {
+      dbError = innerE.message;
+      throw innerE;
+    }
+  }
 }
 
 router.get("/expenses", (req, res) => {
   try {
-    const expenses = db.prepare("SELECT * FROM expenses ORDER BY date DESC").all();
+    const database = getDb();
+    const expenses = database.prepare("SELECT * FROM expenses ORDER BY date DESC").all();
     res.json(expenses);
-  } catch (e) {
-    res.status(500).json({ error: "Database error" });
+  } catch (e: any) {
+    res.status(500).json({ error: "Database error: " + e.message });
   }
 });
 
 router.post("/expenses", (req, res) => {
   try {
+    const database = getDb();
     const { title, amount, category, date, notes } = req.body;
-    const info = db.prepare(
+    const info = database.prepare(
       "INSERT INTO expenses (title, amount, category, date, notes) VALUES (?, ?, ?, ?, ?)"
     ).run(title, amount, category, date, notes);
     res.json({ id: info.lastInsertRowid });
-  } catch (e) {
-    res.status(500).json({ error: "Database error" });
+  } catch (e: any) {
+    res.status(500).json({ error: "Database error: " + e.message });
   }
 });
 
 router.delete("/expenses/:id", (req, res) => {
   try {
-    db.prepare("DELETE FROM expenses WHERE id = ?").run(req.params.id);
+    const database = getDb();
+    database.prepare("DELETE FROM expenses WHERE id = ?").run(req.params.id);
     res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: "Database error" });
+  } catch (e: any) {
+    res.status(500).json({ error: "Database error: " + e.message });
   }
 });
 
@@ -64,7 +91,8 @@ router.post("/send-report", async (req, res) => {
   }
 
   try {
-    const expenses = db.prepare("SELECT * FROM expenses WHERE date >= date('now', 'start of month')").all();
+    const database = getDb();
+    const expenses = database.prepare("SELECT * FROM expenses WHERE date >= date('now', 'start of month')").all();
     const total = expenses.reduce((sum: any, exp: any) => sum + exp.amount, 0);
     
     const smtpHost = process.env.SMTP_HOST;
