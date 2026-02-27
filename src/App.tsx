@@ -83,7 +83,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchExpenses();
+    fetchExpenses().catch(() => setLoading(false));
   }, []);
 
   const addExpense = async (expense: Omit<Expense, 'id'>) => {
