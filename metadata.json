@@ -1,0 +1,7 @@
+{
+  "name": "SmartSpend AI Tracker",
+  "description": "A comprehensive monthly expense tracker featuring AI-powered bill scanning, automatic categorization, and automated email reporting.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
