@@ -1,8 +1,13 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: (process.env.GEMINI_API_KEY as string) || "" });
-
 export const scanReceipt = async (base64Image: string) => {
+  const apiKey = (process.env.GEMINI_API_KEY as string) || "";
+  
+  if (!apiKey) {
+    throw new Error("Gemini API key is missing. Please set GEMINI_API_KEY in your environment variables.");
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
   const model = "gemini-3-flash-preview";
   
   const prompt = `Analyze this receipt/bill image. Extract all items, their prices, and categorize each item. 
